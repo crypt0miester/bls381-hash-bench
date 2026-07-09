@@ -140,8 +140,9 @@ pub(crate) fn to_mont(a: &Fp) -> Fp {
     mont_mul(a, &R2)
 }
 
+/// `a * R^-1 mod p`, via the bare Montgomery reduction.
 pub(crate) fn from_mont(a: &Fp) -> Fp {
-    mont_mul(a, &ONE)
+    mont_redc_cios32(a)
 }
 
 pub(crate) fn limbs_to_be(a: &Fp) -> [u8; 48] {
@@ -276,7 +277,9 @@ fn mac32(acc: u64, a: u64, b: u64, carry: u64) -> (u64, u64) {
 
 /// CIOS with 32-bit limbs: the multiply-accumulate needs no wide arithmetic.
 // Indexed loops are load-bearing here: iterator rewrites measurably regress CU
-// on sBPF, so the range-loop lint is silenced rather than followed.
+// on sBPF, so the range-loop lint is silenced rather than followed. For the same
+// reason the reduction round is kept inline (not shared with mont_redc_cios32):
+// factoring it into an #[inline(always)] helper measurably regressed CU.
 #[inline(always)]
 #[allow(clippy::needless_range_loop)]
 fn mont_mul_cios32(a: &Fp, b: &Fp) -> Fp {
@@ -309,6 +312,38 @@ fn mont_mul_cios32(a: &Fp, b: &Fp) -> Fp {
         t[13] = 0;
     }
 
+    let mut r = [0u64; 6];
+    for i in 0..6 {
+        r[i] = t[i * 2] | (t[i * 2 + 1] << 32);
+    }
+    if t[12] != 0 || geq(&r, &MODULUS) {
+        r = sub_nocheck(&r, &MODULUS);
+    }
+    r
+}
+
+/// `from_mont`: `a * R^-1 mod p`. The Montgomery reduction step of a multiply,
+/// without the product loop.
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn mont_redc_cios32(a: &Fp) -> Fp {
+    let a32 = split32(a);
+    let mut t = [0u64; 14];
+    for i in 0..12 {
+        t[i] = a32[i];
+    }
+    for _ in 0..12 {
+        let m = (t[0].wrapping_mul(INV32)) & 0xffff_ffff;
+        let (_, mut carry) = mac32(t[0], m, P32[0], 0);
+        for j in 1..12 {
+            let (lo, hi) = mac32(t[j], m, P32[j], carry);
+            t[j - 1] = lo;
+            carry = hi;
+        }
+        let s = t[12] + carry;
+        t[11] = s & 0xffff_ffff;
+        t[12] = t[13] + (s >> 32);
+        t[13] = 0;
+    }
     let mut r = [0u64; 6];
     for i in 0..6 {
         r[i] = t[i * 2] | (t[i * 2 + 1] << 32);

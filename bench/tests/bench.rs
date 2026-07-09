@@ -673,6 +673,14 @@ fn bench_witness_nu_encode() {
     assert!(run(&mollusk, 45, &bad).program_result.is_err(), "corrupt nu g2 accepted");
 }
 
+// Correctness guard: the bare Montgomery reduction (from_mont) against the
+// general multiply, plus the adapted iso-11 chain against Horner. Host-side.
+#[test]
+fn field_arithmetic_selftest() {
+    bls381_hash::witness::g1::iso11_adapted_selftest();
+    bls381_hash::witness::g1::redc_selftest();
+}
+
 #[test]
 fn bench_min_pk_verify_end_to_end() {
     use blst::min_pk::{AggregatePublicKey, AggregateSignature, PublicKey, SecretKey, Signature};

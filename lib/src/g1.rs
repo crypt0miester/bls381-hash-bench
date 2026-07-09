@@ -559,6 +559,23 @@ pub mod witness {
         }
     }
 
+    /// Correctness guard: the bare Montgomery reduction must equal the general
+    /// multiply by ONE at arbitrary points, edge cases included.
+    pub fn redc_selftest() {
+        use crate::consts_g1::MODULUS;
+        let one: Fp = [1, 0, 0, 0, 0, 0];
+        let mut samples: Vec<Fp> =
+            alloc::vec![[0u64; 6], one, R, R2, sub_nocheck(&MODULUS, &one)];
+        let mut x = R2;
+        for i in 0..300u64 {
+            x = add_mod(&mont_mul(&x, &R2), &[i, 1, 0, 0, 0, 0]);
+            samples.push(x);
+        }
+        for s in &samples {
+            assert_eq!(mont_redc_cios32(s), mont_mul(s, &one), "redc != from_mont");
+        }
+    }
+
     fn pow_mont(base: &Fp, exp_be: &[u8; 48]) -> Fp {
         let mut acc = R;
         for byte in exp_be {

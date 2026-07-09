@@ -10,8 +10,9 @@ same crate.
 ```rust
 use bls381_hash::{dst, hash_to_g1};
 
-// on-chain verify: DST is a runtime parameter, output is a fixed array
-let point: [u8; 96] = hash_to_g1(dst::G1_RO, message, witness)?;
+// on-chain: DST is a runtime parameter, the payload is the witness bytes
+// followed by the message
+let point = hash_to_g1(dst::G1_RO, payload)?; // Vec<u8>, the 96-byte G1 point
 ```
 
 ```rust
@@ -41,12 +42,12 @@ Measured with mollusk 0.13.4 on the agave 4.0 stack, SBF v3.
 
 | pipeline | CU | witness | compatibility |
 |---|---|---|---|
-| hash_to_G1 (RO, min-sig) | ~233k | 338 B | `_SSWU_RO_POP_`, byte-equal to blst |
-| hash_to_G2 (RO, min-pk) | ~459k | 482 B | `_SSWU_RO_POP_`, byte-equal to blst |
-| encode_to_G1 (NU) | ~176k | 193 B | `_SSWU_NU_POP_`, byte-equal to blst encode |
-| encode_to_G2 (NU) | ~312k | 289 B | `_SSWU_NU_POP_`, byte-equal to blst encode |
-| hash_to_G1 (SvdW) | ~159k | 242 to 434 B | custom suite |
-| hash_to_G2 (SvdW) | ~418k | 482 to 866 B | custom suite |
+| hash_to_G1 (RO, min-sig) | ~230k | 338 B | `_SSWU_RO_POP_`, byte-equal to blst |
+| hash_to_G2 (RO, min-pk) | ~453k | 482 B | `_SSWU_RO_POP_`, byte-equal to blst |
+| encode_to_G1 (NU) | ~172k | 193 B | `_SSWU_NU_POP_`, byte-equal to blst encode |
+| encode_to_G2 (NU) | ~306k | 289 B | `_SSWU_NU_POP_`, byte-equal to blst encode |
+| hash_to_G1 (SvdW) | ~156k | 242 to 434 B | custom suite |
+| hash_to_G2 (SvdW) | ~411k | 482 to 866 B | custom suite |
 
 For scale, a naive port of zkcrypto `bls12_381` costs 11.3M CU for G1 and
 46.5M CU for G2, and a single 381-bit field multiplication bottoms out around
@@ -88,6 +89,8 @@ so the hash stays a pure function of the message.
   instead of 11. Constants were derived and expansion-checked offline.
 - Small constants (`Z = 11`, `Z2 = -(2+i)`, `A' = 240i`, the `2^256` fold)
   are multiplied with addition chains instead of field muls.
+- Bare Montgomery reduction out of Montgomery form. `from_mont` skips the
+  product loop of a multiply by one, about half the multiply-accumulates.
 
 ## SvdW variant (custom suite)
 
@@ -103,27 +106,29 @@ a finding.
 
 Open knobs, in rough order of interest:
 
-- The modexp path (tags 30 to 33) runs hash_to_G1 in ~289k CU with zero
-  witness bytes, against ~233k plus 338 B for the witnessed path. It needs
+- The modexp path (tags 30 to 33) runs hash_to_G1 in ~273k CU with zero
+  witness bytes, against ~230k plus 338 B for the witnessed path. It needs
   `big_mod_exp` (SIMD-0529, merged but not active). Once 0529 activates, a
   transaction that is byte-bound rather than CU-bound should prefer it.
 - The min-pk verify transaction is closer to byte-bound than CU-bound (513k
   of the 1.4M CU ceiling, but witness plus keys eat real transaction space).
   Batching all five G2 inverses behind one witness would save 192 B for
   roughly 17k CU. Not implemented; the right trade depends on the consumer.
-- G2 cofactor clearing costs ~45k CU across ~140 g2 add syscalls. The
-  Budroni-Pintore chain is the best known construction; the cost is syscall
-  pricing, not structure. The verify path feeds the hash into the pairing
-  uncompressed, so no decompression cost hides there.
+- G2 cofactor clearing costs ~65k CU: roughly ~45k across ~140 g2 add syscalls
+  and ~20k of psi/psi2 Fp2 multiplication. The Budroni-Pintore chain is the best
+  known construction, so the syscall share is pricing rather than structure, but
+  the endomorphism field work is real. The verify path feeds the hash into the
+  pairing uncompressed, so no decompression cost hides there.
 
 ## Layout
 
-- `program/src/g1_msig.rs`: G1 RO and NU pipelines, Fp arithmetic
-- `program/src/g2_msig.rs`: G2 RO and NU pipelines, Fp2 arithmetic, cofactor clearing
-- `program/src/{g1,g2}_svdw.rs`: SvdW variants
-- `program/src/{g1,g2}_consts.rs`: SSWU, isogeny, psi, and adapted constants
-- `program/src/lib.rs`: instruction dispatch
-- `bench/tests/`: mollusk benchmarks, blst cross-checks, corrupt-witness rejection
+- `lib/src/fp.rs`, `fp2.rs`: Fp and Fp2 arithmetic (32-bit CIOS Montgomery)
+- `lib/src/g1.rs`, `g2.rs`: RO and NU pipelines, cofactor clearing, host witness generation
+- `lib/src/{g1,g2}_svdw.rs`: SvdW variants
+- `lib/src/consts_g1.rs`, `consts_g2.rs`: SSWU, isogeny, psi, and adapted constants
+- `lib/src/lib.rs`: public API, feature gates, `dst` module
+- `program/src/lib.rs`: SBF tag-dispatch fixture
+- `bench/tests/`: mollusk benchmarks, blst cross-checks, soundness tests
 
 ## Build and run
 
@@ -144,6 +149,6 @@ before it is used anywhere consensus depends on it.
 
 ## License
 
-MIT. The SSWU, isogeny, and psi constants in `{g1,g2}_consts.rs` were
+MIT. The SSWU, isogeny, and psi constants in `lib/src/consts_g{1,2}.rs` were
 extracted from zkcrypto [`bls12_381`](https://github.com/zkcrypto/bls12_381)
 (MIT/Apache-2.0); the map constructions follow Wahby-Boneh, eprint 2019/403.
